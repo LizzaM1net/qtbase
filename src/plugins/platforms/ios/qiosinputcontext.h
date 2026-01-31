@@ -72,9 +72,6 @@ public:
     void setFocusObject(QObject *object) override;
     void focusWindowChanged(QWindow *focusWindow);
 
-    void scrollToCursor();
-    void scroll(int y);
-
     void updateKeyboardState(NSNotification *notification = nullptr);
 
     const ImeState &imeState() { return m_imeState; }
@@ -85,8 +82,6 @@ public:
     static QIOSInputContext *instance();
 
 private:
-    UIView* scrollableRootView();
-
     QIOSLocaleListener *m_localeListener;
     QIOSKeyboardListener *m_keyboardHideGesture;
     QIOSTextResponder *m_textResponder;

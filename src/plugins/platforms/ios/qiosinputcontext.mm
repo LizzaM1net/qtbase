@@ -64,7 +64,6 @@ static QUIView *focusView()
 // -------------------------------------------------------------------------
 
 @interface QIOSKeyboardListener : UIGestureRecognizer <UIGestureRecognizerDelegate>
-@property BOOL hasDeferredScrollToCursor;
 @end
 
 @implementation QIOSKeyboardListener {
@@ -76,8 +75,6 @@ static QUIView *focusView()
     if (self = [super initWithTarget:self action:@selector(gestureStateChanged:)]) {
 
         m_context = context;
-
-        self.hasDeferredScrollToCursor = NO;
 
         // UIGestureRecognizer
         self.enabled = NO;
@@ -100,7 +97,7 @@ static QUIView *focusView()
             selector:@selector(keyboardWillOrDidChange:)
             name:UIKeyboardDidHideNotification object:nil];
         [notificationCenter addObserver:self
-            selector:@selector(keyboardDidChangeFrame:)
+            selector:@selector(keyboardWillOrDidChange:)
             name:UIKeyboardDidChangeFrameNotification object:nil];
 #endif
     }
@@ -127,8 +124,6 @@ static QUIView *focusView()
 
     // Enable hide-keyboard gesture
     self.enabled = m_context->isInputPanelVisible();
-
-    m_context->scrollToCursor();
 }
 
 - (void)keyboardWillHide:(NSNotification *)notification
@@ -140,17 +135,6 @@ static QUIView *focusView()
         // Otherwise we need to await the final touchEnd callback for doing some clean-up.
         self.enabled = NO;
     }
-    m_context->scroll(0);
-}
-
-- (void)keyboardDidChangeFrame:(NSNotification *)notification
-{
-    [self keyboardWillOrDidChange:notification];
-
-    // If the keyboard was visible and docked from before, this is just a geometry
-    // change (normally caused by an orientation change). In that case, update scroll:
-    if (m_context->isInputPanelVisible())
-        m_context->scrollToCursor();
 }
 
 - (void)keyboardWillOrDidChange:(NSNotification *)notification
@@ -247,15 +231,7 @@ static QUIView *focusView()
     if (!m_context->isInputPanelVisible()) {
         qImDebug("keyboard was hidden, disabling hide-keyboard gesture");
         self.enabled = NO;
-    } else {
-        qImDebug("gesture completed without triggering");
-        if (self.hasDeferredScrollToCursor) {
-            qImDebug("applying deferred scroll to cursor");
-            m_context->scrollToCursor();
-        }
     }
-
-    self.hasDeferredScrollToCursor = NO;
 }
 
 @end
@@ -425,161 +401,6 @@ QRectF QIOSInputContext::keyboardRect() const
 
 // -------------------------------------------------------------------------
 
-UIView *QIOSInputContext::scrollableRootView()
-{
-    if (!m_keyboardHideGesture.view)
-        return 0;
-
-    UIWindow *window = static_cast<UIWindow*>(m_keyboardHideGesture.view);
-    if (![window.rootViewController isKindOfClass:[QIOSViewController class]])
-        return 0;
-
-    return window.rootViewController.view;
-}
-
-void QIOSInputContext::scrollToCursor()
-{
-#if !defined(Q_OS_VISIONOS)
-    if (!isQtApplication())
-        return;
-
-    if (m_keyboardHideGesture.state == UIGestureRecognizerStatePossible && m_keyboardHideGesture.numberOfTouches == 1) {
-        // Don't scroll to the cursor if the user is touching the screen and possibly
-        // trying to trigger the hide-keyboard gesture.
-        qImDebug("deferring scrolling to cursor as we're still waiting for a possible gesture");
-        m_keyboardHideGesture.hasDeferredScrollToCursor = YES;
-        return;
-    }
-
-    UIView *rootView = scrollableRootView();
-    if (!rootView)
-        return;
-
-    if (!focusView())
-        return;
-
-    if (rootView.window != focusView().window)
-        return;
-
-    // We only support auto-scroll for docked keyboards for now, so make sure that's the case
-    if (CGRectGetMaxY(m_keyboardState.keyboardEndRect) != CGRectGetMaxY([UIScreen mainScreen].bounds)) {
-        qImDebug("Keyboard not docked, ignoring request to scroll to reveal cursor");
-        return;
-    }
-
-    QPlatformWindow *focusWindow = qApp->focusWindow()->handle();
-    QRect windowCurosorRect = QPlatformInputContext::cursorRectangle().toRect();
-    QRect cursorRect = QRect(focusWindow->mapToGlobal(windowCurosorRect.topLeft()), windowCurosorRect.size());
-
-    // We explicitly ask for the geometry of the screen instead of the availableGeometry,
-    // as we hide the status bar when scrolling the screen, so the available geometry will
-    // include the space taken by the status bar at the moment.
-    QRect screenGeometry = focusWindow->screen()->geometry();
-
-    if (!cursorRect.isNull()) {
-         // Add some padding so that the cursor does not end up directly above the keyboard
-        static const int kCursorRectPadding = 20;
-        cursorRect.adjust(0, -kCursorRectPadding, 0, kCursorRectPadding);
-
-        // Make sure the cursor rect is still within the screen geometry after padding
-        cursorRect &= screenGeometry;
-    }
-
-    QRect keyboardGeometry = QRectF::fromCGRect(m_keyboardState.keyboardEndRect).toRect();
-    QRect availableGeometry = (QRegion(screenGeometry) - keyboardGeometry).boundingRect();
-
-    if (!cursorRect.isNull() && !availableGeometry.contains(cursorRect)) {
-        qImDebug() << "cursor rect" << cursorRect << "not fully within" << availableGeometry;
-        int scrollToCenter = -(availableGeometry.center() - cursorRect.center()).y();
-        int scrollToBottom = focusWindow->screen()->geometry().bottom() - availableGeometry.bottom();
-        scroll(qMin(scrollToCenter, scrollToBottom));
-    } else {
-        scroll(0);
-    }
-#endif
-}
-
-void QIOSInputContext::scroll(int y)
-{
-    Q_ASSERT(y >= 0);
-
-    UIView *rootView = scrollableRootView();
-    if (!rootView)
-        return;
-
-    if (qt_apple_isApplicationExtension()) {
-        qWarning() << "can't scroll root view in application extension";
-        return;
-    }
-
-    CATransform3D translationTransform = CATransform3DMakeTranslation(0.0, -y, 0.0);
-    if (CATransform3DEqualToTransform(translationTransform, rootView.layer.sublayerTransform))
-        return;
-
-    qImDebug() << "scrolling root view to y =" << -y;
-
-    QPointer<QIOSInputContext> self = this;
-    [UIView animateWithDuration:m_keyboardState.animationDuration delay:0
-        options:(m_keyboardState.animationCurve << 16) | UIViewAnimationOptionBeginFromCurrentState
-        animations:^{
-            // The sublayerTransform property of CALayer is not implicitly animated for a
-            // layer-backed view, even inside a UIView animation block, so we need to set up
-            // an explicit CoreAnimation animation. Since there is no predefined media timing
-            // function that matches the custom keyboard animation curve we cheat by asking
-            // the view for an animation of another property, which will give us an animation
-            // that matches the parameters we passed to [UIView animateWithDuration] above.
-            // The reason we ask for the animation of 'backgroundColor' is that it's a simple
-            // property that will not return a compound animation, like eg. bounds will.
-            NSObject *action = (NSObject*)[rootView actionForLayer:rootView.layer forKey:@"backgroundColor"];
-
-            CABasicAnimation *animation;
-            if ([action isKindOfClass:[CABasicAnimation class]]) {
-                animation = static_cast<CABasicAnimation*>(action);
-                animation.keyPath = @"sublayerTransform"; // Instead of backgroundColor
-            } else {
-                animation = [CABasicAnimation animationWithKeyPath:@"sublayerTransform"];
-            }
-
-            CATransform3D currentSublayerTransform = static_cast<CALayer *>([rootView.layer presentationLayer]).sublayerTransform;
-            animation.fromValue = [NSValue valueWithCATransform3D:currentSublayerTransform];
-            animation.toValue = [NSValue valueWithCATransform3D:translationTransform];
-            [rootView.layer addAnimation:animation forKey:@"AnimateSubLayerTransform"];
-            rootView.layer.sublayerTransform = translationTransform;
-
-            bool keyboardScrollIsActive = y != 0;
-
-            // Raise all known windows to above the status-bar if we're scrolling the screen,
-            // while keeping the relative window level between the windows the same.
-            NSArray<UIWindow *> *applicationWindows = [qt_apple_sharedApplication() windows];
-            static QHash<UIWindow *, UIWindowLevel> originalWindowLevels;
-            for (UIWindow *window in applicationWindows) {
-                if (keyboardScrollIsActive && !originalWindowLevels.contains(window))
-                    originalWindowLevels.insert(window, window.windowLevel);
-
-#ifndef Q_OS_TVOS
-                UIWindowLevel windowLevelAdjustment = keyboardScrollIsActive ? UIWindowLevelStatusBar : 0;
-#else
-                UIWindowLevel windowLevelAdjustment = 0;
-#endif
-                window.windowLevel = originalWindowLevels.value(window) + windowLevelAdjustment;
-
-                if (!keyboardScrollIsActive)
-                    originalWindowLevels.remove(window);
-            }
-        }
-        completion:^(BOOL){
-            if (self) {
-                // Scrolling the root view results in the keyboard being moved
-                // relative to the focus window, so we need to re-evaluate the
-                // keyboard rectangle.
-                updateKeyboardState();
-            }
-        }
-    ];
-}
-
-// -------------------------------------------------------------------------
-
 void QIOSInputContext::setFocusObject(QObject *focusObject)
 {
     Q_UNUSED(focusObject);
@@ -601,9 +422,6 @@ void QIOSInputContext::setFocusObject(QObject *focusObject)
     }
 
     reset();
-
-    if (isInputPanelVisible())
-        scrollToCursor();
 }
 
 void QIOSInputContext::focusWindowChanged(QWindow *focusWindow)
@@ -620,9 +438,6 @@ void QIOSInputContext::focusWindowChanged(QWindow *focusWindow)
     // The keyboard rectangle depend on the focus window, so
     // we need to re-evaluate the keyboard state.
     updateKeyboardState();
-
-    if (isInputPanelVisible())
-        scrollToCursor();
 }
 
 /*!
@@ -675,9 +490,6 @@ void QIOSInputContext::update(Qt::InputMethodQueries updatedProperties)
             qImDebug("IM enabled, making text responder first responder");
             [m_textResponder becomeFirstResponder];
         }
-
-        if (changedProperties & Qt::ImCursorRectangle)
-            scrollToCursor();
     } else if ([m_textResponder isFirstResponder]) {
         qImDebug("IM not enabled, resigning text responder as first responder");
         [m_textResponder resignFirstResponder];
