@@ -95,7 +95,6 @@ qt_internal_extend_target(QIOSIntegrationPlugin CONDITION NOT TVOS
 qt_internal_extend_target(QIOSIntegrationPlugin CONDITION NOT (TVOS OR VISIONOS)
     SOURCES
         qiosmenu.h qiosmenu.mm
-        qiostextinputoverlay.h qiostextinputoverlay.mm
 )
 
 add_subdirectory(optional)

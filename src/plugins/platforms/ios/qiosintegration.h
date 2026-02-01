@@ -12,10 +12,6 @@
 
 #include "qiosapplicationstate.h"
 
-#if !defined(Q_OS_TVOS) && !defined(Q_OS_VISIONOS)
-#include "qiostextinputoverlay.h"
-#endif
-
 #if defined(Q_OS_VISIONOS)
 #include <swift/bridging>
 #endif
@@ -118,9 +114,6 @@ private:
     mutable QIOSServices *m_platformServices = nullptr;
     mutable QPlatformAccessibility *m_accessibility;
     QFactoryLoader *m_optionalPlugins;
-#if !defined(Q_OS_TVOS) && !defined(Q_OS_VISIONOS)
-    QIOSTextInputOverlay m_textInputOverlay;
-#endif
 
 #if defined(Q_OS_VISIONOS)
     CompositorLayer *m_immersiveSpaceCompositorLayer = nullptr;
