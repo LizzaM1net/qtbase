@@ -83,7 +83,7 @@ public:
 
 private:
     QIOSLocaleListener *m_localeListener;
-    QIOSKeyboardListener *m_keyboardHideGesture;
+    QIOSKeyboardListener *m_keyboardListener;
     QIOSTextResponder *m_textResponder;
     KeyboardState m_keyboardState;
     ImeState m_imeState;
